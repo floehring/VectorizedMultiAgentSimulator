@@ -125,7 +125,7 @@ class BoidPolicy:
             agent.action.u = (alignment_weight * alignment_steering).clamp(-agent.u_range, agent.u_range)
         else:
             # If no neighbors, keep current velocity
-            agent.action.u = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+            agent.action.u = agent.state.vel.clamp(-agent.u_range, agent.u_range)
 
         print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}]')
 
