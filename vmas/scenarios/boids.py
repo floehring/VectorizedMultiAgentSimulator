@@ -85,7 +85,6 @@ class Scenario(BaseScenario):
         return torch.zeros(n_envs, device=self.world.device)
 
     def observation(self, agent: Agent):
-        print(f'observation {agent.name}')
         return torch.cat(
             [
                 agent.state.pos,
@@ -122,18 +121,19 @@ class BoidPolicy:
         neighbors = [a for a in other_agents if torch.linalg.vector_norm(a.state.pos - agent.state.pos) < perception_range]
 
         for neighbor in neighbors:
-
             # Rule 1: Alignment - steer towards the average heading of local flockmates
             alignment += neighbor.state.vel
 
-        # Average the vectors
-        alignment /= len(neighbors)
+        if len(neighbors) != 0:
 
-        # No neighbors -> agent maintains its current velocity
-        if len(neighbors) == 0:
-            agent.action.u = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+            desired_velocity = alignment / len(neighbors)
+            alignment_steering = desired_velocity - agent.state.vel
+
+            action = (alignment_weight * alignment_steering).clamp(-agent.u_range, agent.u_range)
+            agent.action.u = action
         else:
-            agent.action.u = alignment_weight * alignment
+            # If no neighbors, keep current velocity
+            agent.action.u = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
         print(f'Agent: {agent.name}; Physical Action: {agent.action.u}')
 
