@@ -1,34 +1,31 @@
-from typing import Callable, Dict
-
 import torch
-from torch import Tensor
+
 from vmas import render_interactively
-from vmas.simulator.core import Agent, Landmark, Sphere, World, Entity
-from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
+from vmas.simulator.core import Agent, Landmark, Sphere, World
 from vmas.simulator.scenario import BaseScenario
-from vmas.simulator.sensors import Lidar
-from vmas.simulator.utils import Color, X, Y, ScenarioUtils
+from vmas.simulator.utils import Color, ScenarioUtils
 
 
 class Scenario(BaseScenario):
 
+    def __init__(self):
+        super().__init__()
+
+        # zoom out to see the whole world
+        self.viewer_zoom = 1.5
+
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 4)
-        n_obstacles = kwargs.get("n_obstacles", 5)
+        n_agents = kwargs.get("n_agents", 8)
+        n_obstacles = kwargs.get("n_obstacles", 0)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
-        self.collision_reward = kwargs.get("collision_reward", -0.1)
-        self.dist_shaping_factor = kwargs.get("dist_shaping_factor", 1)
-
         self.plot_grid = True
-        self.desired_distance = 0.1
-        self.min_collision_distance = 0.005
 
         self.x_dim = 1
         self.y_dim = 1
 
         # Make world
-        world = World(batch_dim, device, collision_force=400, substeps=5)
+        world = World(batch_dim, device, collision_force=400, substeps=5, drag=0, x_semidim=2, y_semidim=2)
 
         # Add agents
         self._target = Agent(
@@ -36,6 +33,7 @@ class Scenario(BaseScenario):
             collide=True,
             color=Color.GREEN,
             render_action=True,
+            max_speed=0.2
             # action_script=self.action_script_creator(),
         )
         world.add_agent(self._target)
@@ -47,6 +45,7 @@ class Scenario(BaseScenario):
                 collide=True,
                 render_action=True,
                 action_script=BoidPolicy().run,
+                max_speed=0.2
             )
 
             world.add_agent(agent)
@@ -67,9 +66,6 @@ class Scenario(BaseScenario):
         return world
 
     def reset_world_at(self, env_index: int = None):
-
-        self.t = torch.zeros(self.world.batch_dim, device=self.world.device)
-
         ScenarioUtils.spawn_entities_randomly(
             self.world.entities,
             self.world,
@@ -78,6 +74,10 @@ class Scenario(BaseScenario):
             x_bounds=(-self.x_dim, self.x_dim),
             y_bounds=(-self.y_dim, self.y_dim),
         )
+
+        for agent in self.world.scripted_agents:
+            agent.state.vel = 2 * torch.rand(self.world.batch_dim, self.world.dim_p, device=self.world.device) - 1
+            # agent.state.vel = torch.tensor([[1.0, 0.0]], device=self.world.device)
 
     def reward(self, agent: Agent):
         # Reward not needed -> dummy values
@@ -92,13 +92,6 @@ class Scenario(BaseScenario):
             ],
             dim=-1,
         )
-
-    def action_script_creator(self):
-        def action_script(agent, world):
-            t = self.t / 30
-            agent.action.u = torch.stack([torch.cos(t), torch.sin(t)], dim=1)
-
-        return action_script
 
 
 class BoidPolicy:
@@ -118,24 +111,23 @@ class BoidPolicy:
         separation = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
         other_agents = [a for a in world.agents if a != agent]
-        neighbors = [a for a in other_agents if torch.linalg.vector_norm(a.state.pos - agent.state.pos) < perception_range]
+        neighbors = [a for a in other_agents if torch.linalg.vector_norm(a.state.pos - agent.state.pos) <= perception_range]
 
         for neighbor in neighbors:
+
             # Rule 1: Alignment - steer towards the average heading of local flockmates
             alignment += neighbor.state.vel
 
         if len(neighbors) != 0:
-
             desired_velocity = alignment / len(neighbors)
             alignment_steering = desired_velocity - agent.state.vel
 
-            action = (alignment_weight * alignment_steering).clamp(-agent.u_range, agent.u_range)
-            agent.action.u = action
+            agent.action.u = (alignment_weight * alignment_steering).clamp(-agent.u_range, agent.u_range)
         else:
             # If no neighbors, keep current velocity
             agent.action.u = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
-        print(f'Agent: {agent.name}; Physical Action: {agent.action.u}')
+        print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}]')
 
 
 if __name__ == "__main__":
