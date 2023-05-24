@@ -2169,19 +2169,13 @@ class World(TorchVectorizedObject):
             buffer_size = .1
 
             if self._x_semidim is not None:
-                # When the entity enters the buffer zone on the right, it starts to appear on the left
-                if new_pos[:, X] > self._x_semidim + buffer_size:
-                    new_pos[:, X] -= 2 * self._x_semidim
-                # When the entity enters the buffer zone on the left, it starts to appear on the right
-                elif new_pos[:, X] < -self._x_semidim - buffer_size:
-                    new_pos[:, X] += 2 * self._x_semidim
-
+                new_pos[:, X] = torch.clamp(
+                    new_pos[:, X], -self._x_semidim, self._x_semidim
+                )
             if self._y_semidim is not None:
-                # Similarly for the y dimension
-                if new_pos[:, Y] > self._y_semidim + buffer_size:
-                    new_pos[:, Y] -= 2 * self._y_semidim
-                elif new_pos[:, Y] < -self._y_semidim - buffer_size:
-                    new_pos[:, Y] += 2 * self._y_semidim
+                new_pos[:, Y] = torch.clamp(
+                    new_pos[:, Y], -self._y_semidim, self._y_semidim
+                )
 
             entity.state.pos = new_pos
 

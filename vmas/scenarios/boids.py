@@ -30,7 +30,7 @@ class Scenario(BaseScenario):
         # Add agents
         self._target = Agent(
             name="target",
-            collide=True,
+            collide=False,
             color=Color.GREEN,
             render_action=True,
             max_speed=0.2
@@ -46,6 +46,7 @@ class Scenario(BaseScenario):
                 render_action=True,
                 action_script=BoidPolicy().run,
                 max_speed=0.2
+
             )
 
             world.add_agent(agent)
@@ -101,18 +102,20 @@ class BoidPolicy:
         alignment_weight = 1
         cohesion_weight = 1
         separation_weight = 1
+        edge_avoidance_weight = 5
 
         action = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         action += self.steer_towards(agent, self.separation(agent, world)) * separation_weight
         action += self.steer_towards(agent, self.alignment(agent, world)) * alignment_weight
         action += self.steer_towards(agent, self.cohesion(agent, world)) * cohesion_weight
+        action += self.steer_towards(agent, self.avoid_edges(agent, world)) * edge_avoidance_weight
 
         print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}]')
 
         agent.action.u = action.clamp(-agent.u_range, agent.u_range)
 
     def separation(self, agent, world):
-        perception_range = 0.4
+        perception_range = 0.3
         separation_distance = 0.1
         neighbors = []
         separation_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
@@ -145,6 +148,7 @@ class BoidPolicy:
 
             if distance < perception_range:
                 alignment_heading += boid.state.vel
+                neighbors.append(boid)
 
         if len(neighbors) == 0:
             return alignment_heading
@@ -163,19 +167,44 @@ class BoidPolicy:
 
             if distance < perception_range:
                 cohesion_heading += boid.state.pos
-            neighbors.append(boid)
-
+                neighbors.append(boid)
 
         if len(neighbors) == 0:
             return cohesion_heading
         return cohesion_heading / len(neighbors)
 
-
     def steer_towards(self, agent, heading):
         print(f'Heading: {heading}')
-        if not torch.all(heading.eq(0)):
+        if not torch.all(torch.eq(heading, 0)):
             return heading - agent.state.vel
         return agent.state.vel
+
+    def avoid_edges(self, agent, world):
+        edge_margin = 0.1  # Margin to keep away from the edges
+        avoidance_distance = 0.5  # Distance at which the avoidance force is applied
+
+        desired_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+
+        # Calculate the distances from the agent's position to the edges of the world
+        x_distance = torch.abs(agent.state.pos[:, 0]) - (world.x_semidim - edge_margin)
+        y_distance = torch.abs(agent.state.pos[:, 1]) - (world.y_semidim - edge_margin)
+
+        # Calculate the avoidance direction based on the distances
+        x_avoidance_dir = torch.where(x_distance < 0, 0, -torch.sign(agent.state.pos[:, 0]))
+        y_avoidance_dir = torch.where(y_distance < 0, 0, -torch.sign(agent.state.pos[:, 1]))
+
+        # Combine the avoidance directions to form the desired heading
+        desired_heading[:, 0] = x_avoidance_dir
+        desired_heading[:, 1] = y_avoidance_dir
+
+        # Normalize the desired heading to unit length
+        desired_heading = torch.nn.functional.normalize(desired_heading, dim=-1)
+
+        # Scale the desired heading by the desired speed
+        desired_speed = agent.max_speed
+        desired_heading *= desired_speed
+
+        return desired_heading
 
 
 if __name__ == "__main__":
