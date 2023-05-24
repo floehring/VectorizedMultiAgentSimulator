@@ -15,7 +15,7 @@ class Scenario(BaseScenario):
         self.viewer_zoom = 1.5
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 8)
+        n_agents = kwargs.get("n_agents", 5)
         n_obstacles = kwargs.get("n_obstacles", 0)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
@@ -97,37 +97,85 @@ class Scenario(BaseScenario):
 class BoidPolicy:
 
     def run(self, agent, world):
-        # The perception range within which the agent considers other agents
-        perception_range = 0.5
-
         # The weights for the three rules
-        alignment_weight = 1.0
-        cohesion_weight = 1.0
-        separation_weight = 1.5
+        alignment_weight = 1
+        cohesion_weight = 1
+        separation_weight = 1
 
-        # Initialize vectors for the three rules
-        alignment = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        cohesion = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        separation = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-
-        other_agents = [a for a in world.agents if a != agent]
-        neighbors = [a for a in other_agents if torch.linalg.vector_norm(a.state.pos - agent.state.pos) <= perception_range]
-
-        for neighbor in neighbors:
-
-            # Rule 1: Alignment - steer towards the average heading of local flockmates
-            alignment += neighbor.state.vel
-
-        if len(neighbors) != 0:
-            desired_velocity = alignment / len(neighbors)
-            alignment_steering = desired_velocity - agent.state.vel
-
-            agent.action.u = (alignment_weight * alignment_steering).clamp(-agent.u_range, agent.u_range)
-        else:
-            # If no neighbors, keep current velocity
-            agent.action.u = agent.state.vel.clamp(-agent.u_range, agent.u_range)
+        action = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        action += self.steer_towards(agent, self.separation(agent, world)) * separation_weight
+        action += self.steer_towards(agent, self.alignment(agent, world)) * alignment_weight
+        action += self.steer_towards(agent, self.cohesion(agent, world)) * cohesion_weight
 
         print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}]')
+
+        agent.action.u = action.clamp(-agent.u_range, agent.u_range)
+
+    def separation(self, agent, world):
+        perception_range = 0.4
+        separation_distance = 0.1
+        neighbors = []
+        separation_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        for boid in world.agents:
+            if boid == agent:
+                continue
+
+            offset = boid.state.pos - agent.state.pos
+            distance = torch.linalg.vector_norm(offset)
+
+            if distance < perception_range:
+                neighbors.append(boid)
+                if distance < separation_distance:
+                    separation_heading -= offset / distance
+
+        if len(neighbors) == 0:
+            return separation_heading
+        return separation_heading / len(neighbors)
+
+    def alignment(self, agent, world):
+        perception_range = 0.3
+        neighbors = []
+        alignment_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        for boid in world.agents:
+            if boid == agent:
+                continue
+
+            offset = boid.state.pos - agent.state.pos
+            distance = torch.linalg.vector_norm(offset)
+
+            if distance < perception_range:
+                alignment_heading += boid.state.vel
+
+        if len(neighbors) == 0:
+            return alignment_heading
+        return alignment_heading / len(neighbors)
+
+    def cohesion(self, agent, world):
+        perception_range = 0.3
+        neighbors = []
+        cohesion_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        for boid in world.agents:
+            if boid == agent:
+                continue
+
+            offset = boid.state.pos - agent.state.pos
+            distance = torch.linalg.vector_norm(offset)
+
+            if distance < perception_range:
+                cohesion_heading += boid.state.pos
+            neighbors.append(boid)
+
+
+        if len(neighbors) == 0:
+            return cohesion_heading
+        return cohesion_heading / len(neighbors)
+
+
+    def steer_towards(self, agent, heading):
+        print(f'Heading: {heading}')
+        if not torch.all(heading.eq(0)):
+            return heading - agent.state.vel
+        return agent.state.vel
 
 
 if __name__ == "__main__":
