@@ -158,6 +158,8 @@ class InteractiveEnv:
 
         agent_range = self.env.unwrapped().agents[self.current_agent_index].u_range
 
+        builtin_keys = [key.LEFT, key.RIGHT, key.DOWN, key.UP, key.TAB, key.R]
+
         u = self.u
         u2 = self.u2
         if k == key.LEFT:
@@ -209,6 +211,10 @@ class InteractiveEnv:
 
         if k == key.R:
             self.reset = True
+
+        if k not in builtin_keys:
+            scenario = self.env.unwrapped().scenario
+            scenario.handle_key_press(self.env.unwrapped(), k)
 
         if self.continuous:
             self.u = (self.keys[1] - self.keys[0], self.keys[3] - self.keys[2])

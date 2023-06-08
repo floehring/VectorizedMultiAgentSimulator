@@ -266,3 +266,23 @@ class BaseScenario(ABC):
         :param agent: the agent whose actions have to be processed.
         """
         pass
+
+    @abstractmethod
+    def handle_key_press(self, env, key: int):
+        """
+        This function can be overridden to process the key input from the user directly from the scenario.
+
+        :param env: the environment that received the key input.
+        :param key: the number value of the key that was pressed.
+        """
+        pass
+
+    @abstractmethod
+    def handle_key_release(self, env, key: int):
+        """
+        This function can be overridden to process the key input from the user directly from the scenario.
+
+        :param env: the environment that received the key input.
+        :param key: the number value of the key that was released.
+        """
+        pass

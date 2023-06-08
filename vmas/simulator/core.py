@@ -11,6 +11,7 @@ from typing import Callable, List, Tuple
 
 import torch
 from torch import Tensor
+
 from vmas.simulator.joints import JointConstraint, Joint
 from vmas.simulator.sensors import Sensor
 from vmas.simulator.utils import (
@@ -189,6 +190,46 @@ class Line(Shape):
             width=self.width,
         )
 
+
+class Boid(Shape):
+    def __init__(self, length: float = 0.05, radius: float = 0.1):
+        super().__init__()
+        assert length > 0, f"Length must be > 0, got {length}"
+        assert radius > 0, f"Radius must be > 0, got {radius}"
+        self._length = length
+        self._radius = radius
+
+    @property
+    def length(self):
+        return self._length
+
+    @property
+    def radius(self):
+        return self._radius
+
+    def get_delta_from_anchor(self, anchor: Tuple[float, float]) -> Tuple[float, float]:
+        return anchor[X] * self.length, anchor[Y] * self.radius
+
+    def moment_of_inertia(self, mass: float):
+        # Moment of inertia will be a combination of the two shapes, but mostly dominated by the circular component
+        return (1 / 2) * mass * self.radius**2 + (1 / 12) * mass * (self.length**2)
+
+    def circumscribed_radius(self):
+        # The radius of the circle around the boid is the circumscribed radius
+        return self.radius
+
+    def get_geometry(self) -> "Geom":
+        from vmas.simulator import rendering
+
+        # We are rendering two geometries: the circle and the line (pointer)
+        pointer = rendering.Line(
+            (0, 0),
+            (self.length, 0),
+            width=1,
+        )
+        circle = rendering.make_circle(self.radius)
+
+        return rendering.Compound([pointer, circle])
 
 class EntityState(TorchVectorizedObject):
     def __init__(self):
@@ -2166,7 +2207,6 @@ class World(TorchVectorizedObject):
                     -entity.v_range, entity.v_range
                 )
             new_pos = entity.state.pos + entity.state.vel * self._sub_dt
-            buffer_size = .1
 
             if self._x_semidim is not None:
                 new_pos[:, X] = torch.clamp(

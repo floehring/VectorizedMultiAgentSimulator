@@ -1,9 +1,10 @@
 import torch
+from pyglet.window import key
 
 from vmas import render_interactively
-from vmas.simulator.core import Agent, Landmark, Sphere, World
+from vmas.simulator.core import Agent, Landmark, Sphere, World, Box, Boid
 from vmas.simulator.scenario import BaseScenario
-from vmas.simulator.utils import Color, ScenarioUtils
+from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 
 
 class Scenario(BaseScenario):
@@ -12,11 +13,11 @@ class Scenario(BaseScenario):
         super().__init__()
 
         # zoom out to see the whole world
-        self.viewer_zoom = 1.5
+        self.viewer_zoom = 2.2
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 5)
-        n_obstacles = kwargs.get("n_obstacles", 0)
+        n_agents = kwargs.get("n_agents", 10)
+        n_obstacles = kwargs.get("n_obstacles", 5)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
         self.plot_grid = True
@@ -24,19 +25,26 @@ class Scenario(BaseScenario):
         self.x_dim = 1
         self.y_dim = 1
 
-        # Make world
-        world = World(batch_dim, device, collision_force=400, substeps=5, drag=0, x_semidim=2, y_semidim=2)
+        self.margin = 1
 
-        # Add agents
+        # Make world
+        world = World(batch_dim, device, collision_force=400, substeps=1, drag=0, x_semidim=4, y_semidim=4)
+
+        # Add target
         self._target = Agent(
             name="target",
-            collide=False,
+            collide=True,
             color=Color.GREEN,
+            alpha=1,
             render_action=True,
-            max_speed=0.2
+            max_speed=1,
+            drag=0.1,
+            shape=Sphere(radius=0.15),
             # action_script=self.action_script_creator(),
         )
         world.add_agent(self._target)
+        self.target_enabled = True
+
 
         # Add agents
         for i in range(n_agents):
@@ -44,12 +52,36 @@ class Scenario(BaseScenario):
                 name=f"agent_{i}",
                 collide=True,
                 render_action=True,
-                action_script=BoidPolicy().run,
-                max_speed=0.2
-
+                action_script=BoidPolicy(self).run,
+                max_speed=0.4,
+                shape=Boid(radius=0.08),
             )
 
             world.add_agent(agent)
+
+
+        self.bounds = []
+        boundary_box = world.add_landmark(
+            Landmark(
+                name="boundary_box",
+                collide=False,
+                movable=False,
+                shape=Box(length=world.y_semidim * 2, width=world.x_semidim * 2, hollow=True),
+                color=Color.GRAY,
+            )
+        )
+        self.bounds.append(boundary_box)
+
+        margin_box = world.add_landmark(
+            Landmark(
+                name="margin_box",
+                collide=False,
+                movable=False,
+                shape=Box(length=world.y_semidim * 2 - self.margin, width=world.x_semidim * 2 - self.margin, hollow=True),
+                color=Color.WHITE,
+            )
+        )
+        self.bounds.append(margin_box)
 
         # Add landmarks
         self.obstacles = []
@@ -58,7 +90,7 @@ class Scenario(BaseScenario):
                 name=f"obstacle_{i}",
                 collide=True,
                 movable=False,
-                shape=Sphere(radius=0.1),
+                shape=Sphere(radius=0.2),
                 color=Color.RED,
             )
             world.add_landmark(obstacle)
@@ -68,7 +100,7 @@ class Scenario(BaseScenario):
 
     def reset_world_at(self, env_index: int = None):
         ScenarioUtils.spawn_entities_randomly(
-            self.world.entities,
+            [entity for entity in self.world.entities if entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self._target],
             self.world,
             env_index,
             self._min_dist_between_entities,
@@ -78,7 +110,6 @@ class Scenario(BaseScenario):
 
         for agent in self.world.scripted_agents:
             agent.state.vel = 2 * torch.rand(self.world.batch_dim, self.world.dim_p, device=self.world.device) - 1
-            # agent.state.vel = torch.tensor([[1.0, 0.0]], device=self.world.device)
 
     def reward(self, agent: Agent):
         # Reward not needed -> dummy values
@@ -86,125 +117,118 @@ class Scenario(BaseScenario):
         return torch.zeros(n_envs, device=self.world.device)
 
     def observation(self, agent: Agent):
-        return torch.cat(
-            [
-                agent.state.pos,
-                agent.state.vel,
-            ],
-            dim=-1,
-        )
+        return torch.cat([torch.zeros_like(agent.state.pos), torch.zeros_like(agent.state.vel)], dim=-1)
+
+    def handle_key_press(self, env, k):
+        if k == key.SPACE:
+            print("Toggle target")
+            self.target_enabled = not self.target_enabled
+            self._target._collide = self.target_enabled
+            self._target._alpha = 1 if self.target_enabled else .3
+
+    def handle_key_release(self, env, key: int):
+        pass
 
 
 class BoidPolicy:
 
+    def __init__(self, scenario):
+        self.scenario = scenario
+
     def run(self, agent, world):
         # The weights for the three rules
-        alignment_weight = 1
+        alignment_weight = 2
         cohesion_weight = 1
-        separation_weight = 1
-        edge_avoidance_weight = 5
+        separation_weight = 1.5
 
+        separation_distance = agent.shape.circumscribed_radius() * 6
+
+        perception_range = 0.6
+
+        alignment = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        cohesion = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        separation = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         action = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        action += self.steer_towards(agent, self.separation(agent, world)) * separation_weight
-        action += self.steer_towards(agent, self.alignment(agent, world)) * alignment_weight
-        action += self.steer_towards(agent, self.cohesion(agent, world)) * cohesion_weight
-        action += self.steer_towards(agent, self.avoid_edges(agent, world)) * edge_avoidance_weight
+        target_factor = 2
 
-        print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}]')
+        neighbor_count = 0
 
-        agent.action.u = action.clamp(-agent.u_range, agent.u_range)
+        target = world.policy_agents[0]
 
-    def separation(self, agent, world):
-        perception_range = 0.3
-        separation_distance = 0.1
-        neighbors = []
-        separation_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         for boid in world.agents:
-            if boid == agent:
+            if boid == agent or (not self.scenario.target_enabled and boid in world.policy_agents):
                 continue
 
             offset = boid.state.pos - agent.state.pos
-            distance = torch.linalg.vector_norm(offset)
+            distance = torch.linalg.norm(offset)
 
             if distance < perception_range:
-                neighbors.append(boid)
+                alignment += boid.state.vel
+                cohesion += boid.state.pos
+
                 if distance < separation_distance:
-                    separation_heading -= offset / distance
+                    separation -= offset / distance
+                neighbor_count += 1
 
-        if len(neighbors) == 0:
-            return separation_heading
-        return separation_heading / len(neighbors)
+        if neighbor_count > 0:
+            alignment /= neighbor_count
+            cohesion /= neighbor_count
 
-    def alignment(self, agent, world):
-        perception_range = 0.3
-        neighbors = []
-        alignment_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        for boid in world.agents:
-            if boid == agent:
-                continue
+            print(f'Alignment: {alignment}, Cohesion: {cohesion}, Separation: {separation}')
 
-            offset = boid.state.pos - agent.state.pos
-            distance = torch.linalg.vector_norm(offset)
+            action += self.steer_towards(agent, separation) * separation_weight
+            action += self.steer_towards(agent, alignment) * alignment_weight
+            action += self.steer_towards(agent, cohesion) * cohesion_weight
 
-            if distance < perception_range:
-                alignment_heading += boid.state.vel
-                neighbors.append(boid)
+        else:
 
-        if len(neighbors) == 0:
-            return alignment_heading
-        return alignment_heading / len(neighbors)
+            action += torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
-    def cohesion(self, agent, world):
-        perception_range = 0.3
-        neighbors = []
-        cohesion_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        for boid in world.agents:
-            if boid == agent:
-                continue
+        action += self.avoid_boundaries(agent, world)
 
-            offset = boid.state.pos - agent.state.pos
-            distance = torch.linalg.vector_norm(offset)
+        if self.scenario.target_enabled:
+            action += self.steer_towards(agent, target.state.pos - agent.state.pos) * target_factor
 
-            if distance < perception_range:
-                cohesion_heading += boid.state.pos
-                neighbors.append(boid)
+        epsilon = 1e-5
+        agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
 
-        if len(neighbors) == 0:
-            return cohesion_heading
-        return cohesion_heading / len(neighbors)
+        # print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}, pos: {agent.state.pos}, mag: {torch.linalg.norm(agent.state.vel)}] \n')
 
     def steer_towards(self, agent, heading):
-        print(f'Heading: {heading}')
+        """Steer towards a heading vector, as described by Craig Reynolds' Boids algorithm.
+        
+            steering = desired_velocity - current_velocity
+        """
         if not torch.all(torch.eq(heading, 0)):
-            return heading - agent.state.vel
+            return torch.nn.functional.normalize(heading) * agent.max_speed - agent.state.vel
         return agent.state.vel
 
-    def avoid_edges(self, agent, world):
-        edge_margin = 0.1  # Margin to keep away from the edges
-        avoidance_distance = 0.5  # Distance at which the avoidance force is applied
+    def avoid_boundaries(self, agent, world):
+        # Define a margin for edge avoidance. Adjust this value based on your world size.
+        margin = self.scenario.margin
+        max_push = agent.max_speed * 4
 
-        desired_heading = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+        # Create an avoidance heading initially as zeros.
+        avoidance_heading = torch.zeros_like(agent.state.vel)
 
-        # Calculate the distances from the agent's position to the edges of the world
-        x_distance = torch.abs(agent.state.pos[:, 0]) - (world.x_semidim - edge_margin)
-        y_distance = torch.abs(agent.state.pos[:, 1]) - (world.y_semidim - edge_margin)
+        # Check proximity to each of the four edges and adjust heading away from the edge if too close
+        for axis in [X, Y]:
+            dist_rt = world.x_semidim - agent.state.pos[:, axis] # dist for right and top
+            dist_lb = torch.abs(-world.x_semidim - agent.state.pos[:, axis]) # dist for left and bottom
+            if dist_rt < margin:
+                avoidance_heading[:, axis] = -torch.sign(agent.state.pos[:, axis]) \
+                                             * self.linear_interpolation(margin, dist_rt, max_push)
+            if dist_lb < margin:
+                avoidance_heading[:, axis] = -torch.sign(agent.state.pos[:, axis]) \
+                                             * self.linear_interpolation(margin, dist_lb, max_push)
 
-        # Calculate the avoidance direction based on the distances
-        x_avoidance_dir = torch.where(x_distance < 0, 0, -torch.sign(agent.state.pos[:, 0]))
-        y_avoidance_dir = torch.where(y_distance < 0, 0, -torch.sign(agent.state.pos[:, 1]))
+        print(f'Avoidance heading: {avoidance_heading} \n')
 
-        # Combine the avoidance directions to form the desired heading
-        desired_heading[:, 0] = x_avoidance_dir
-        desired_heading[:, 1] = y_avoidance_dir
+        return avoidance_heading
 
-        # Normalize the desired heading to unit length
-        desired_heading = torch.nn.functional.normalize(desired_heading, dim=-1)
 
-        # Scale the desired heading by the desired speed
-        desired_speed = agent.max_speed
-        desired_heading *= desired_speed
-
-        return desired_heading
+    def linear_interpolation(self, margin, dist, max):
+        return (margin - dist) * max / margin
 
 
 if __name__ == "__main__":
