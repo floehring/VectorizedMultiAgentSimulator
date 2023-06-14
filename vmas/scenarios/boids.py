@@ -2,7 +2,7 @@ import torch
 from pyglet.window import key
 
 from vmas import render_interactively
-from vmas.simulator.core import Agent, Landmark, Sphere, World, Box, Boid
+from vmas.simulator.core import Agent, Landmark, Sphere, World, Box
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 
@@ -17,7 +17,7 @@ class Scenario(BaseScenario):
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         n_agents = kwargs.get("n_agents", 10)
-        n_obstacles = kwargs.get("n_obstacles", 5)
+        n_obstacles = kwargs.get("n_obstacles", 0)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
         self.plot_grid = True
@@ -33,7 +33,7 @@ class Scenario(BaseScenario):
         # Add target
         self._target = Agent(
             name="target",
-            collide=True,
+            collide=False,
             color=Color.GREEN,
             alpha=1,
             render_action=True,
@@ -54,7 +54,7 @@ class Scenario(BaseScenario):
                 render_action=True,
                 action_script=BoidPolicy(self).run,
                 max_speed=0.4,
-                shape=Boid(radius=0.08),
+                shape=Sphere(radius=0.08),
             )
 
             world.add_agent(agent)
@@ -90,7 +90,7 @@ class Scenario(BaseScenario):
                 name=f"obstacle_{i}",
                 collide=True,
                 movable=False,
-                shape=Sphere(radius=0.2),
+                shape=Sphere(radius=0.4),
                 color=Color.RED,
             )
             world.add_landmark(obstacle)
@@ -123,8 +123,18 @@ class Scenario(BaseScenario):
         if k == key.SPACE:
             print("Toggle target")
             self.target_enabled = not self.target_enabled
-            self._target._collide = self.target_enabled
             self._target._alpha = 1 if self.target_enabled else .3
+        elif k == key.P:
+            obstacle = Landmark(
+                name=f"obstacle_{len(self.obstacles)}",
+                collide=True,
+                movable=False,
+                shape=Sphere(radius=0.4),
+                color=Color.RED,
+            )
+            self.world.add_landmark(obstacle)
+            obstacle.state.pos = self._target.state.pos
+            self.obstacles.append(obstacle)
 
     def handle_key_release(self, env, key: int):
         pass
@@ -140,6 +150,7 @@ class BoidPolicy:
         alignment_weight = 2
         cohesion_weight = 1
         separation_weight = 1.5
+        avoidance_weight = 4
 
         separation_distance = agent.shape.circumscribed_radius() * 6
 
@@ -149,12 +160,12 @@ class BoidPolicy:
         cohesion = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         separation = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         action = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+
+        # How strong is the attraction to the target
         target_factor = 2
-
-        neighbor_count = 0
-
         target = world.policy_agents[0]
 
+        neighbor_count = 0
         for boid in world.agents:
             if boid == agent or (not self.scenario.target_enabled and boid in world.policy_agents):
                 continue
@@ -185,6 +196,7 @@ class BoidPolicy:
             action += torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
         action += self.avoid_boundaries(agent, world)
+        action += self.avoid_obstacles(agent, world) * avoidance_weight
 
         if self.scenario.target_enabled:
             action += self.steer_towards(agent, target.state.pos - agent.state.pos) * target_factor
@@ -226,6 +238,24 @@ class BoidPolicy:
 
         return avoidance_heading
 
+    def avoid_obstacles(self, agent, world):
+        # Define a detection radius for obstacle avoidance.
+        detection_radius = agent.shape.circumscribed_radius() * 8
+        max_push = agent.max_speed * 4
+
+        # Create an avoidance heading initially as zeros.
+        avoidance_heading = torch.zeros_like(agent.state.vel)
+
+        # Check proximity to each obstacle and adjust heading away from the obstacle if too close
+        for obstacle in self.scenario.obstacles:
+            dist_to_obstacle = torch.linalg.norm(agent.state.pos - obstacle.state.pos)
+            if dist_to_obstacle < detection_radius:
+                avoidance_heading += (agent.state.pos - obstacle.state.pos) * \
+                                     self.linear_interpolation(detection_radius, dist_to_obstacle, max_push)
+
+        print(f'Obstacle avoidance heading: {avoidance_heading} \n')
+
+        return avoidance_heading
 
     def linear_interpolation(self, margin, dist, max):
         return (margin - dist) * max / margin
