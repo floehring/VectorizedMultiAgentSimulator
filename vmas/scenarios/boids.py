@@ -31,7 +31,7 @@ class Scenario(BaseScenario):
         world = World(batch_dim, device, collision_force=400, substeps=1, drag=0, x_semidim=4, y_semidim=4)
 
         # Add target
-        self._target = Agent(
+        self.target = Agent(
             name="target",
             collide=False,
             color=Color.GREEN,
@@ -42,7 +42,7 @@ class Scenario(BaseScenario):
             shape=Sphere(radius=0.15),
             # action_script=self.action_script_creator(),
         )
-        world.add_agent(self._target)
+        world.add_agent(self.target)
         self.target_enabled = True
 
 
@@ -100,7 +100,7 @@ class Scenario(BaseScenario):
 
     def reset_world_at(self, env_index: int = None):
         ScenarioUtils.spawn_entities_randomly(
-            [entity for entity in self.world.entities if entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self._target],
+            [entity for entity in self.world.entities if entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self.target],
             self.world,
             env_index,
             self._min_dist_between_entities,
@@ -123,7 +123,7 @@ class Scenario(BaseScenario):
         if k == key.SPACE:
             print("Toggle target")
             self.target_enabled = not self.target_enabled
-            self._target._alpha = 1 if self.target_enabled else .3
+            self.target._alpha = 1 if self.target_enabled else .3
         elif k == key.P:
             obstacle = Landmark(
                 name=f"obstacle_{len(self.obstacles)}",
@@ -133,7 +133,7 @@ class Scenario(BaseScenario):
                 color=Color.RED,
             )
             self.world.add_landmark(obstacle)
-            obstacle.state.pos = self._target.state.pos
+            obstacle.state.pos = self.target.state.pos
             self.obstacles.append(obstacle)
 
     def handle_key_release(self, env, key: int):
@@ -163,11 +163,11 @@ class BoidPolicy:
 
         # How strong is the attraction to the target
         target_factor = 2
-        target = world.policy_agents[0]
+        target = self.scenario.target
 
         neighbor_count = 0
         for boid in world.agents:
-            if boid == agent or (not self.scenario.target_enabled and boid in world.policy_agents):
+            if boid == agent or (not self.scenario.target_enabled and boid == target):
                 continue
 
             offset = boid.state.pos - agent.state.pos
@@ -196,7 +196,7 @@ class BoidPolicy:
             action += torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
         action += self.avoid_boundaries(agent, world)
-        action += self.avoid_obstacles(agent, world) * avoidance_weight
+        action += self.steer_towards(agent, self.avoid_obstacles(agent, world)) * avoidance_weight
 
         if self.scenario.target_enabled:
             action += self.steer_towards(agent, target.state.pos - agent.state.pos) * target_factor
@@ -240,7 +240,8 @@ class BoidPolicy:
 
     def avoid_obstacles(self, agent, world):
         # Define a detection radius for obstacle avoidance.
-        detection_radius = agent.shape.circumscribed_radius() * 8
+        obstacle_detection_radius = agent.shape.circumscribed_radius() * 8
+        obstacle_margin = self.scenario.margin
         max_push = agent.max_speed * 4
 
         # Create an avoidance heading initially as zeros.
@@ -249,9 +250,9 @@ class BoidPolicy:
         # Check proximity to each obstacle and adjust heading away from the obstacle if too close
         for obstacle in self.scenario.obstacles:
             dist_to_obstacle = torch.linalg.norm(agent.state.pos - obstacle.state.pos)
-            if dist_to_obstacle < detection_radius:
+            if dist_to_obstacle < obstacle_detection_radius:
                 avoidance_heading += (agent.state.pos - obstacle.state.pos) * \
-                                     self.linear_interpolation(detection_radius, dist_to_obstacle, max_push)
+                                     self.linear_interpolation(obstacle_detection_radius, dist_to_obstacle, max_push)
 
         print(f'Obstacle avoidance heading: {avoidance_heading} \n')
 
