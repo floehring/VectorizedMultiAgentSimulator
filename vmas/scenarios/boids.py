@@ -11,12 +11,12 @@ class Scenario(BaseScenario):
 
     def __init__(self):
         super().__init__()
-
+        self.obstacles = []
         # zoom out to see the whole world
         self.viewer_zoom = 2.2
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 10)
+        n_agents = kwargs.get("n_agents", 2)
         n_obstacles = kwargs.get("n_obstacles", 0)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
@@ -45,7 +45,6 @@ class Scenario(BaseScenario):
         world.add_agent(self.target)
         self.target_enabled = True
 
-
         # Add agents
         for i in range(n_agents):
             agent = Agent(
@@ -59,7 +58,12 @@ class Scenario(BaseScenario):
 
             world.add_agent(agent)
 
+        # self.init_bounds(world)
+        # self.init_obstacles(world, n_obstacles)
 
+        return world
+
+    def init_bounds(self, world):
         self.bounds = []
         boundary_box = world.add_landmark(
             Landmark(
@@ -77,12 +81,14 @@ class Scenario(BaseScenario):
                 name="margin_box",
                 collide=False,
                 movable=False,
-                shape=Box(length=world.y_semidim * 2 - self.margin, width=world.x_semidim * 2 - self.margin, hollow=True),
+                shape=Box(length=world.y_semidim * 2 - self.margin, width=world.x_semidim * 2 - self.margin,
+                          hollow=True),
                 color=Color.WHITE,
             )
         )
         self.bounds.append(margin_box)
 
+    def init_obstacles(self, world, n_obstacles):
         # Add landmarks
         self.obstacles = []
         for i in range(n_obstacles):
@@ -96,11 +102,10 @@ class Scenario(BaseScenario):
             world.add_landmark(obstacle)
             self.obstacles.append(obstacle)
 
-        return world
-
     def reset_world_at(self, env_index: int = None):
         ScenarioUtils.spawn_entities_randomly(
-            [entity for entity in self.world.entities if entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self.target],
+            [entity for entity in self.world.entities if
+             entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self.target],
             self.world,
             env_index,
             self._min_dist_between_entities,
@@ -225,8 +230,8 @@ class BoidPolicy:
 
         # Check proximity to each of the four edges and adjust heading away from the edge if too close
         for axis in [X, Y]:
-            dist_rt = world.x_semidim - agent.state.pos[:, axis] # dist for right and top
-            dist_lb = torch.abs(-world.x_semidim - agent.state.pos[:, axis]) # dist for left and bottom
+            dist_rt = world.x_semidim - agent.state.pos[:, axis]  # dist for right and top
+            dist_lb = torch.abs(-world.x_semidim - agent.state.pos[:, axis])  # dist for left and bottom
             if dist_rt < margin:
                 avoidance_heading[:, axis] = -torch.sign(agent.state.pos[:, axis]) \
                                              * self.linear_interpolation(margin, dist_rt, max_push)
@@ -234,7 +239,7 @@ class BoidPolicy:
                 avoidance_heading[:, axis] = -torch.sign(agent.state.pos[:, axis]) \
                                              * self.linear_interpolation(margin, dist_lb, max_push)
 
-        print(f'Avoidance heading: {avoidance_heading} \n')
+        # print(f'Avoidance heading: {avoidance_heading} \n')
 
         return avoidance_heading
 

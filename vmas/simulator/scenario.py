@@ -267,7 +267,6 @@ class BaseScenario(ABC):
         """
         pass
 
-    @abstractmethod
     def handle_key_press(self, env, key: int):
         """
         This function can be overridden to process the key input from the user directly from the scenario.
@@ -277,7 +276,6 @@ class BaseScenario(ABC):
         """
         pass
 
-    @abstractmethod
     def handle_key_release(self, env, key: int):
         """
         This function can be overridden to process the key input from the user directly from the scenario.
