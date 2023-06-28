@@ -16,7 +16,7 @@ class Scenario(BaseScenario):
         self.viewer_zoom = 2.2
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 2)
+        n_agents = kwargs.get("n_agents", 1)
         n_obstacles = kwargs.get("n_obstacles", 0)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.15)
 
@@ -24,8 +24,10 @@ class Scenario(BaseScenario):
 
         self.x_dim = 1
         self.y_dim = 1
-
         self.margin = 1
+
+        self.obstacle_radius = 0.3
+        self.obstacle_repulsion_zone_radius = self.obstacle_radius + 0.3
 
         # Make world
         world = World(batch_dim, device, collision_force=400, substeps=1, drag=0, x_semidim=4, y_semidim=4)
@@ -42,8 +44,8 @@ class Scenario(BaseScenario):
             shape=Sphere(radius=0.15),
             # action_script=self.action_script_creator(),
         )
-        world.add_agent(self.target)
-        self.target_enabled = True
+        # world.add_agent(self.target)
+        self.target_enabled = False
 
         # Add agents
         for i in range(n_agents):
@@ -52,11 +54,34 @@ class Scenario(BaseScenario):
                 collide=True,
                 render_action=True,
                 action_script=BoidPolicy(self).run,
-                max_speed=0.4,
+                max_speed=0.15,
                 shape=Sphere(radius=0.08),
             )
 
             world.add_agent(agent)
+
+        # Add obstacle
+        obstacle = Landmark(
+            name=f"obstacle",
+            collide=True,
+            movable=False,
+            shape=Sphere(radius=self.obstacle_radius),
+            color=Color.RED,
+        )
+
+        world.add_landmark(obstacle)
+        self.obstacles.append(obstacle)
+
+        # Add obstacle repulsion zone
+        obstacle_repulsion_zone = Agent(
+            name=f"obstacle_repulsion_zone",
+            collide=False,
+            movable=False,
+            shape=Sphere(radius=self.obstacle_repulsion_zone_radius),
+            color=Color.BLUE,
+        )
+        obstacle_repulsion_zone._alpha = 0.1
+        world.add_agent(obstacle_repulsion_zone)
 
         # self.init_bounds(world)
         # self.init_obstacles(world, n_obstacles)
@@ -103,18 +128,24 @@ class Scenario(BaseScenario):
             self.obstacles.append(obstacle)
 
     def reset_world_at(self, env_index: int = None):
-        ScenarioUtils.spawn_entities_randomly(
-            [entity for entity in self.world.entities if
-             entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self.target],
-            self.world,
-            env_index,
-            self._min_dist_between_entities,
-            x_bounds=(-self.x_dim, self.x_dim),
-            y_bounds=(-self.y_dim, self.y_dim),
-        )
+        # ScenarioUtils.spawn_entities_randomly(
+        #     [entity for entity in self.world.entities if
+        #      entity.name != 'margin_box' and entity.name != 'boundary_box' and entity != self.target],
+        #     self.world,
+        #     env_index,
+        #     self._min_dist_between_entities,
+        #     x_bounds=(-self.x_dim, self.x_dim),
+        #     y_bounds=(-self.y_dim, self.y_dim),
+        # )
 
-        for agent in self.world.scripted_agents:
-            agent.state.vel = 2 * torch.rand(self.world.batch_dim, self.world.dim_p, device=self.world.device) - 1
+        self.world.scripted_agents[0].state.pos = torch.tensor([[-self.world.x_semidim, 0.0]], device=self.world.device)
+        self.world.landmarks[0].state.pos = torch.tensor([[0.0, 0.0]], device=self.world.device)
+        obstacle_repulsion_zone = [agent for agent in self.world.policy_agents if agent.name == 'obstacle_repulsion_zone'][0]
+        obstacle_repulsion_zone.state.pos = torch.tensor([[0.0, 0.0]], device=self.world.device)
+
+
+        # for agent in self.world.scripted_agents:
+        #     agent.state.vel = 2 * torch.rand(self.world.batch_dim, self.world.dim_p, device=self.world.device) - 1
 
     def reward(self, agent: Agent):
         # Reward not needed -> dummy values
@@ -207,7 +238,12 @@ class BoidPolicy:
             action += self.steer_towards(agent, target.state.pos - agent.state.pos) * target_factor
 
         epsilon = 1e-5
-        agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
+
+        # Let agent move from left to right
+        obstacle_action = self.avoid_obstacles(agent, world)
+        agent.action.u = torch.tensor([[1.0, 0]], device=world.device) + obstacle_action
+
+        # agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
 
         # print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}, pos: {agent.state.pos}, mag: {torch.linalg.norm(agent.state.vel)}] \n')
 
@@ -244,12 +280,7 @@ class BoidPolicy:
         return avoidance_heading
 
     def avoid_obstacles(self, agent, world):
-        # Define a detection radius for obstacle avoidance.
-        obstacle_detection_radius = agent.shape.circumscribed_radius() * 8
-        obstacle_margin = self.scenario.margin
         max_push = agent.max_speed * 4
-
-        # Create an avoidance heading initially as zeros.
         avoidance_heading = torch.zeros_like(agent.state.vel)
 
         # Check proximity to each obstacle and adjust heading away from the obstacle if too close
