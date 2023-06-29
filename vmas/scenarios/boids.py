@@ -12,6 +12,7 @@ class Scenario(BaseScenario):
     def __init__(self):
         super().__init__()
         self.obstacles = []
+        self.obstacle_repulsion_zones = []
         # zoom out to see the whole world
         self.viewer_zoom = 2.2
 
@@ -27,7 +28,7 @@ class Scenario(BaseScenario):
         self.margin = 1
 
         self.obstacle_radius = 0.3
-        self.obstacle_repulsion_zone_radius = self.obstacle_radius + 0.3
+        self.obstacle_repulsion_zone_radius = self.obstacle_radius + 0.6
 
         # Make world
         world = World(batch_dim, device, collision_force=400, substeps=1, drag=0, x_semidim=4, y_semidim=4)
@@ -44,7 +45,7 @@ class Scenario(BaseScenario):
             shape=Sphere(radius=0.15),
             # action_script=self.action_script_creator(),
         )
-        # world.add_agent(self.target)
+        world.add_agent(self.target)
         self.target_enabled = False
 
         # Add agents
@@ -161,21 +162,35 @@ class Scenario(BaseScenario):
             self.target_enabled = not self.target_enabled
             self.target._alpha = 1 if self.target_enabled else .3
         elif k == key.P:
-            obstacle = Landmark(
-                name=f"obstacle_{len(self.obstacles)}",
-                collide=True,
-                movable=False,
-                shape=Sphere(radius=0.4),
-                color=Color.RED,
-            )
-            self.world.add_landmark(obstacle)
-            obstacle.state.pos = self.target.state.pos
-            self.obstacles.append(obstacle)
+            self.add_landmark(self.target.state.pos)
 
     def handle_key_release(self, env, key: int):
         pass
 
 
+    def add_landmark(self, pos):
+        obstacle = Landmark(
+            name=f"obstacle_{len(self.obstacles)}",
+            collide=True,
+            movable=False,
+            shape=Sphere(radius=0.4),
+            color=Color.RED,
+        )
+        self.world.add_landmark(obstacle)
+        obstacle.state.pos = self.target.state.pos
+        self.obstacles.append(obstacle)
+
+        obstacle_repulsion_zone = Agent(
+            name=f"obstacle_repulsion_zone{len(self.obstacle_repulsion_zones)}",
+            collide=False,
+            movable=False,
+            shape=Sphere(radius=self.obstacle_repulsion_zone_radius),
+            color=Color.BLUE,
+        )
+        obstacle_repulsion_zone._alpha = 0.1
+        self.world.add_agent(obstacle_repulsion_zone)
+        obstacle_repulsion_zone.state.pos = self.target.state.pos
+        self.obstacle_repulsion_zones.append(obstacle_repulsion_zone)
 class BoidPolicy:
 
     def __init__(self, scenario):
@@ -221,8 +236,6 @@ class BoidPolicy:
             alignment /= neighbor_count
             cohesion /= neighbor_count
 
-            print(f'Alignment: {alignment}, Cohesion: {cohesion}, Separation: {separation}')
-
             action += self.steer_towards(agent, separation) * separation_weight
             action += self.steer_towards(agent, alignment) * alignment_weight
             action += self.steer_towards(agent, cohesion) * cohesion_weight
@@ -239,11 +252,10 @@ class BoidPolicy:
 
         epsilon = 1e-5
 
-        # Let agent move from left to right
         obstacle_action = self.avoid_obstacles(agent, world)
-        agent.action.u = torch.tensor([[1.0, 0]], device=world.device) + obstacle_action
-
-        # agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
+        action = torch.tensor([[1.0, 0]], device=world.device) + obstacle_action
+        print('Action: ', action)
+        agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
 
         # print(f'Agent: {agent.name} [vel: {agent.state.vel}, action: {agent.action.u}, pos: {agent.state.pos}, mag: {torch.linalg.norm(agent.state.vel)}] \n')
 
@@ -280,17 +292,21 @@ class BoidPolicy:
         return avoidance_heading
 
     def avoid_obstacles(self, agent, world):
-        max_push = agent.max_speed * 4
+        max_repulsion_force = agent.max_speed * 8
         avoidance_heading = torch.zeros_like(agent.state.vel)
 
         # Check proximity to each obstacle and adjust heading away from the obstacle if too close
         for obstacle in self.scenario.obstacles:
-            dist_to_obstacle = torch.linalg.norm(agent.state.pos - obstacle.state.pos)
-            if dist_to_obstacle < obstacle_detection_radius:
-                avoidance_heading += (agent.state.pos - obstacle.state.pos) * \
-                                     self.linear_interpolation(obstacle_detection_radius, dist_to_obstacle, max_push)
-
-        print(f'Obstacle avoidance heading: {avoidance_heading} \n')
+            dir_to_boid = (agent.state.pos - agent.shape.circumscribed_radius()) - (obstacle.state.pos - obstacle.shape.circumscribed_radius())
+            dist_to_boid = torch.linalg.norm(dir_to_boid)
+            if dist_to_boid < (self.scenario.obstacle_repulsion_zone_radius + self.scenario.obstacle_radius):
+                dir_to_boid /= dist_to_boid
+                repulsion_strength = max_repulsion_force * ((self.scenario.obstacle_radius + self.scenario.obstacle_repulsion_zone_radius) - dist_to_boid) / self.scenario.obstacle_repulsion_zone_radius
+                print(f'Repulsion strength: {repulsion_strength}')
+                print(f'Dir to boid: {dir_to_boid}')
+                print(f'Dist to boid: {dist_to_boid}')
+                avoidance_heading += dir_to_boid * repulsion_strength
+                print(f'avoidance heading: {avoidance_heading} \n')
 
         return avoidance_heading
 
@@ -299,4 +315,4 @@ class BoidPolicy:
 
 
 if __name__ == "__main__":
-    render_interactively(__file__, control_two_agents=False)
+    render_interactively(__file__, control_two_agents=False, display_info=False)
