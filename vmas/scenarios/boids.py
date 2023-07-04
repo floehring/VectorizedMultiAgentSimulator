@@ -15,6 +15,9 @@ class Scenario(BaseScenario):
         self.obstacle_repulsion_zones = []
         # zoom out to see the whole world
         self.viewer_zoom = 2.3
+        self.use_cohesion = True
+        self.use_alignment = True
+        self.use_separation = True
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         n_agents = kwargs.get("n_agents", 12)
@@ -50,8 +53,12 @@ class Scenario(BaseScenario):
                 name=f"agent_{i}",
                 collide=False,
                 render_action=True,
-                action_script=BoidPolicy(self, perception_range, separation_distance, smoothing).run,
-                max_speed=.25,
+                action_script=BoidPolicy(self,
+                                         obstacle_detection_range,
+                                         perception_range,
+                                         separation_distance,
+                                         smoothing).run,
+                max_speed=.20,
                 shape=Sphere(radius=agent_radius),
                 parent=Agent(name=f"agent_{i}_perception_range", collide=False, shape=Sphere(radius=perception_range),
             ))
@@ -120,7 +127,7 @@ class Scenario(BaseScenario):
             self.world,
             env_index,
             self._min_dist_between_entities * 4,
-            x_bounds=(-self.world.x_semidim + self.margin, self.world.x_semidim - self.margin ),
+            x_bounds=(-self.world.x_semidim + self.margin, self.world.x_semidim - self.margin),
             y_bounds=(-self.world.y_semidim + self.margin, self.world.y_semidim - self.margin),
         )
 
@@ -145,6 +152,15 @@ class Scenario(BaseScenario):
             self.target._alpha = 1 if self.target_enabled else .3
         elif k == key.P:
             self.add_landmark(self.world, self.target.state.pos)
+        elif k == key.B:
+            self.use_cohesion = not self.use_cohesion
+            print(f"Use cohesion: {self.use_cohesion}")
+        elif k == key.N:
+            self.use_alignment = not self.use_alignment
+            print(f"Use alignment: {self.use_alignment}")
+        elif k == key.M:
+            self.use_separation = not self.use_separation
+            print(f"Use separation: {self.use_separation}")
 
     def handle_key_release(self, env, key: int):
         pass
