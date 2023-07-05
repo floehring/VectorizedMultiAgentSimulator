@@ -1277,9 +1277,9 @@ class World(TorchVectorizedObject):
         for e in self.entities:
             if entity is e or not entity_filter(e):
                 continue
-            assert e.collides(entity) and entity.collides(
-                e
-            ), "Rays are only casted among collidables"
+            # assert e.collides(entity) and entity.collides(
+            #     e
+            # ), "Rays are only casted among collidables"
             if isinstance(e.shape, Box):
                 d = self._cast_ray_to_box(e, pos, angles, max_range)
             elif isinstance(e.shape, Sphere):

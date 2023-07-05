@@ -4,6 +4,7 @@ from pyglet.window import key
 from vmas import render_interactively
 from vmas.simulator.core import Agent, Landmark, Sphere, World, Box
 from vmas.simulator.scenario import BaseScenario
+from vmas.simulator.sensors import Lidar
 from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 
 
@@ -14,7 +15,7 @@ class Scenario(BaseScenario):
         self.obstacles = []
         self.obstacle_repulsion_zones = []
         # zoom out to see the whole world
-        self.viewer_zoom = 2.3
+        self.viewer_zoom = 1.8
         self.use_cohesion = True
         self.use_alignment = True
         self.use_separation = True
@@ -33,6 +34,7 @@ class Scenario(BaseScenario):
 
         agent_radius = 0.1
         perception_range = agent_radius * 6
+        obstacle_detection_range =perception_range * 1.1
         separation_distance = agent_radius * 2.3
 
         # Make world
@@ -41,13 +43,14 @@ class Scenario(BaseScenario):
 
         self.init_bounds(world)
         self.init_target(world)
-        self.init_agents(world, n_agents, agent_radius, perception_range, separation_distance)
+        self.init_agents(world, n_agents, agent_radius, perception_range, separation_distance, obstacle_detection_range)
 
         self.init_obstacles(world, n_obstacles)
 
         return world
 
-    def init_agents(self, world, n_agents, agent_radius, perception_range, separation_distance, smoothing=2):
+    def init_agents(self, world, n_agents, agent_radius, perception_range, separation_distance,
+                    obstacle_detection_range, smoothing=2):
         for i in range(n_agents):
             agent = Agent(
                 name=f"agent_{i}",
@@ -60,8 +63,11 @@ class Scenario(BaseScenario):
                                          smoothing).run,
                 max_speed=.20,
                 shape=Sphere(radius=agent_radius),
-                parent=Agent(name=f"agent_{i}_perception_range", collide=False, shape=Sphere(radius=perception_range),
-            ))
+                sensors=[Lidar(world,
+                               max_range=obstacle_detection_range * 1.2,
+                               entity_filter=lambda e: e.name.startswith("obstacle"),
+                               render_color=Color.RED, n_rays=12)],
+            )
 
             world.add_agent(agent)
 
@@ -153,17 +159,26 @@ class Scenario(BaseScenario):
         elif k == key.P:
             self.add_landmark(self.world, self.target.state.pos)
         elif k == key.B:
-            self.use_cohesion = not self.use_cohesion
-            print(f"Use cohesion: {self.use_cohesion}")
+            self.toggle_behavior("cohesion")
         elif k == key.N:
-            self.use_alignment = not self.use_alignment
-            print(f"Use alignment: {self.use_alignment}")
+            self.toggle_behavior("alignment")
         elif k == key.M:
-            self.use_separation = not self.use_separation
-            print(f"Use separation: {self.use_separation}")
+            self.toggle_behavior("separation")
 
     def handle_key_release(self, env, key: int):
         pass
+
+    def toggle_behavior(self, behavior):
+        if behavior == "cohesion":
+            self.use_cohesion = not self.use_cohesion
+            print(f"Use cohesion: {self.use_cohesion}")
+        elif behavior == "alignment":
+            self.use_alignment = not self.use_alignment
+            print(f"Use alignment: {self.use_alignment}")
+        elif behavior == "separation":
+            self.use_separation = not self.use_separation
+            print(f"Use separation: {self.use_separation}")
+        print(f"Use cohesion: {self.use_cohesion}, alignment: {self.use_alignment}, separation: {self.use_separation}")
 
     def add_landmark(self, world, pos=None):
         obstacle = Landmark(
@@ -178,32 +193,20 @@ class Scenario(BaseScenario):
             obstacle.state.pos = pos
         self.obstacles.append(obstacle)
 
-        # obstacle_repulsion_zone = Agent(
-        #     name=f"obstacle_repulsion_zone{len(self.obstacle_repulsion_zones)}",
-        #     collide=False,
-        #     movable=False,
-        #     shape=Sphere(radius=self.obstacle_repulsion_zone_radius),
-        #     color=Color.BLUE,
-        #     parent=obstacle,
-        # )
-        # obstacle_repulsion_zone._alpha = 0.1
-        # world.add_agent(obstacle_repulsion_zone)
-        # obstacle_repulsion_zone.state.pos = self.target.state.pos
-        # self.obstacle_repulsion_zones.append(obstacle_repulsion_zone)
-
 
 class BoidPolicy:
 
-    def __init__(self, scenario, perception_range=0.6, separation_distance=0.3, smoothing=5):
+    def __init__(self, scenario, obstacle_detection_range, perception_range=0.6, separation_distance=0.3, smoothing=5):
         self.scenario = scenario
         self.perception_range = perception_range
         self.separation_distance = separation_distance
         self.smoothing = smoothing
+        self.obstacle_detection_range = obstacle_detection_range
 
     def run(self, agent, world):
         # The weights for the three rules
         alignment_weight = 1
-        cohesion_weight = 1
+        cohesion_weight = 0.8
         separation_weight = 3
         obstacle_avoidance_weight = 3
         boundary_avoidance_weight = 0.5
@@ -214,7 +217,7 @@ class BoidPolicy:
         action = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
 
         # How strong is the attraction to the target
-        target_factor = 2
+        target_factor = 6
         target = self.scenario.target
 
         neighbor_count = 0
@@ -222,7 +225,7 @@ class BoidPolicy:
             if boid == agent or (not self.scenario.target_enabled and boid == target):
                 continue
 
-            offset = boid.state.pos - agent.state.pos
+            offset = agent.state.pos - boid.state.pos
             distance = torch.linalg.norm(offset)
 
             if self.is_in_perception_range(boid, distance, offset, self.perception_range):
@@ -230,7 +233,7 @@ class BoidPolicy:
                 cohesion += boid.state.pos
 
                 if distance < self.separation_distance:
-                    separation -= offset / distance
+                    separation += offset / distance
                 neighbor_count += 1
 
         if neighbor_count > 0:
@@ -238,9 +241,14 @@ class BoidPolicy:
             cohesion /= neighbor_count
             cohesion -= agent.state.pos
 
-            action += ((agent.state.vel + separation) * separation_weight) * (1 / self.smoothing)
-            action += ((agent.state.vel + alignment) * alignment_weight) * (1 / self.smoothing)
-            action += ((agent.state.vel + cohesion) * cohesion_weight) * (1 / self.smoothing)
+            if self.scenario.use_separation:
+                action += ((agent.state.vel + separation) * separation_weight) * (1 / self.smoothing)
+
+            if self.scenario.use_alignment:
+                action += ((agent.state.vel + alignment) * alignment_weight) * (1 / self.smoothing)
+
+            if self.scenario.use_cohesion:
+                action += ((agent.state.vel + cohesion) * cohesion_weight) * (1 / self.smoothing)
 
         avoid_boundaries_action = self.avoid_boundaries(agent, world)
         action += avoid_boundaries_action * boundary_avoidance_weight
@@ -249,7 +257,7 @@ class BoidPolicy:
         action += avoid_obstacles_action * obstacle_avoidance_weight
 
         if self.scenario.target_enabled:
-            action += target.state.pos - agent.state.pos * target_factor * 1 / self.smoothing
+            action += ((target.state.pos - agent.state.pos) - agent.state.vel) * target_factor / self.smoothing
 
         epsilon = 1e-5
         agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
@@ -292,7 +300,7 @@ class BoidPolicy:
     def avoid_obstacles(self, agent, world):
         max_avoidance = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
         Lb = self.perception_range * 1.4
-        maxspeed = agent.max_speed * 1
+        maxspeed = agent.max_speed * 1.5
 
         for obstacle in [obstacle for obstacle in world.landmarks if obstacle.name.startswith("obstacle")]:
             dx = obstacle.state.pos - agent.state.pos
@@ -313,9 +321,54 @@ class BoidPolicy:
 
         return max_avoidance
 
+    def avoid_obstacles_lidar(self, agent, world):
+        obstacle_avoidance = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
+
+        lidar = agent.sensors[0]
+        measurements = lidar.measure()
+
+        agent_direction = torch.atan2(agent.state.vel[:, 1], agent.state.vel[:, 0])
+
+        fov = torch.pi / 2
+
+        min_angle = float('inf')
+        min_angle_dir = None
+
+        dy = agent.state.vel
+        rb = torch.linalg.norm(dy)
+        ro = self.scenario.obstacle_radius
+
+        for i, dist in enumerate(measurements[0]):
+
+            ray_angle = lidar._angles[i]
+            relative_angle = torch.abs(ray_angle - agent_direction)
+            relative_angle = torch.min(relative_angle, 2 * torch.pi - relative_angle)
+
+            if dist < self.obstacle_detection_range and relative_angle < fov / 2:
+                if relative_angle < min_angle:
+                    min_angle = relative_angle
+                    min_angle_dir = self.get_ray_direction(ray_angle)
+
+        if min_angle_dir is not None:
+            avoidance_strength = ((rb + ro) - torch.linalg.norm(dy)) / (rb + ro)
+            avoidance_direction = -min_angle_dir
+            avoidance_direction /= torch.linalg.norm(avoidance_direction)
+            obstacle_avoidance += avoidance_strength * avoidance_direction
+
+        return obstacle_avoidance
+
+
     @staticmethod
     def linear_interpolation(margin, dist, max):
         return (margin - dist) * max / margin
+
+    @staticmethod
+    def get_ray_direction(angle):
+        ray_dir_world = torch.stack(
+            [torch.cos(angle), torch.sin(angle)], dim=-1
+        )
+
+        return ray_dir_world
 
 
 if __name__ == "__main__":
