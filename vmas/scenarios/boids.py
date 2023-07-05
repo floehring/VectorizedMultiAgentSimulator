@@ -19,7 +19,6 @@ class Scenario(BaseScenario):
         self.use_cohesion = True
         self.use_alignment = True
         self.use_separation = True
-        self.avoid_target = False
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         n_agents = kwargs.get("n_agents", 10)
@@ -36,7 +35,7 @@ class Scenario(BaseScenario):
         self.agent_radius = 0.1
         self.perception_range = self.agent_radius * 6
         self.obstacle_detection_range = self.perception_range * 1.1
-        self.separation_distance = self.agent_radius * 2.3
+        self.separation_distance = self.agent_radius * 3
         self.smoothing = 2
 
         # Make world
@@ -218,7 +217,7 @@ class Scenario(BaseScenario):
 
 class BoidPolicy:
 
-    def __init__(self, scenario, obstacle_detection_range, perception_range=0.6, separation_distance=0.3, smoothing=5):
+    def __init__(self, scenario, obstacle_detection_range, perception_range, separation_distance, smoothing):
         self.scenario = scenario
         self.perception_range = perception_range
         self.separation_distance = separation_distance
@@ -279,7 +278,7 @@ class BoidPolicy:
         action += avoid_obstacles_action * obstacle_avoidance_weight
 
         if self.scenario.target_enabled:
-            action += ((target.state.pos - agent.state.pos) - agent.state.vel) * target_factor / self.smoothing
+            action += ((target.state.pos - agent.state.pos) - agent.state.vel) * target_factor
 
         epsilon = 1e-5
         agent.action.u = action.clamp(-agent.u_range + epsilon, agent.u_range - epsilon)
@@ -321,7 +320,7 @@ class BoidPolicy:
 
     def avoid_obstacles(self, agent, world):
         max_avoidance = torch.zeros((world.batch_dim, world.dim_p), device=world.device)
-        Lb = self.perception_range * 1.4
+        Lb = self.perception_range * 1.3
         maxspeed = agent.max_speed * 1.5
 
         obstacles = self.scenario.obstacles
