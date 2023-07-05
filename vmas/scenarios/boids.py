@@ -22,7 +22,7 @@ class Scenario(BaseScenario):
         self.avoid_target = False
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
-        n_agents = kwargs.get("n_agents", 12)
+        n_agents = kwargs.get("n_agents", 10)
         n_obstacles = kwargs.get("n_obstacles", 2)
         self._min_dist_between_entities = kwargs.get("min_dist_between_entities", 0.2)
 
@@ -196,13 +196,10 @@ class Scenario(BaseScenario):
     def toggle_behavior(self, behavior):
         if behavior == "cohesion":
             self.use_cohesion = not self.use_cohesion
-            print(f"Use cohesion: {self.use_cohesion}")
         elif behavior == "alignment":
             self.use_alignment = not self.use_alignment
-            print(f"Use alignment: {self.use_alignment}")
         elif behavior == "separation":
             self.use_separation = not self.use_separation
-            print(f"Use separation: {self.use_separation}")
         print(f"Use cohesion: {self.use_cohesion}, alignment: {self.use_alignment}, separation: {self.use_separation}")
 
     def add_landmark(self, world, pos=None):
@@ -231,7 +228,7 @@ class BoidPolicy:
     def run(self, agent, world):
         # The weights for the three rules
         alignment_weight = 1
-        cohesion_weight = 0.8
+        cohesion_weight = 0.5
         separation_weight = 3
         obstacle_avoidance_weight = 3
         boundary_avoidance_weight = 0.5
