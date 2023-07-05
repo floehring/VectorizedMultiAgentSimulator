@@ -19,6 +19,7 @@ class Scenario(BaseScenario):
         self.use_cohesion = True
         self.use_alignment = True
         self.use_separation = True
+        self.avoid_target = False
 
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         n_agents = kwargs.get("n_agents", 12)
@@ -32,10 +33,11 @@ class Scenario(BaseScenario):
         self.obstacle_radius = 0.3
         self.obstacle_repulsion_zone_radius = self.obstacle_radius + 0.4
 
-        agent_radius = 0.1
-        perception_range = agent_radius * 6
-        obstacle_detection_range =perception_range * 1.1
-        separation_distance = agent_radius * 2.3
+        self.agent_radius = 0.1
+        self.perception_range = self.agent_radius * 6
+        self.obstacle_detection_range = self.perception_range * 1.1
+        self.separation_distance = self.agent_radius * 2.3
+        self.smoothing = 2
 
         # Make world
         world = World(batch_dim, device, collision_force=400, substeps=1, drag=0, x_semidim=self.bounds / 2,
@@ -43,14 +45,14 @@ class Scenario(BaseScenario):
 
         self.init_bounds(world)
         self.init_target(world)
-        self.init_agents(world, n_agents, agent_radius, perception_range, separation_distance, obstacle_detection_range)
+        self.init_agents(world, n_agents, self.agent_radius, self.perception_range, self.separation_distance, self.obstacle_detection_range, self.smoothing)
 
         self.init_obstacles(world, n_obstacles)
 
         return world
 
     def init_agents(self, world, n_agents, agent_radius, perception_range, separation_distance,
-                    obstacle_detection_range, smoothing=2):
+                    obstacle_detection_range, smoothing):
         for i in range(n_agents):
             agent = Agent(
                 name=f"agent_{i}",
@@ -63,10 +65,10 @@ class Scenario(BaseScenario):
                                          smoothing).run,
                 max_speed=.20,
                 shape=Sphere(radius=agent_radius),
-                sensors=[Lidar(world,
-                               max_range=obstacle_detection_range * 1.2,
-                               entity_filter=lambda e: e.name.startswith("obstacle"),
-                               render_color=Color.RED, n_rays=12)],
+                # sensors=[Lidar(world,
+                #                max_range=obstacle_detection_range * 1.2,
+                #                entity_filter=lambda e: e.name.startswith("obstacle"),
+                #                render_color=Color.RED, n_rays=12)],
             )
 
             world.add_agent(agent)
@@ -164,9 +166,32 @@ class Scenario(BaseScenario):
             self.toggle_behavior("alignment")
         elif k == key.M:
             self.toggle_behavior("separation")
+        elif k == key.H:
+            self.add_agent(self.world, self.target.state.pos)
+
 
     def handle_key_release(self, env, key: int):
         pass
+
+    def add_agent(self, world, pos=None):
+        agent = Agent(
+            name=f"agent_{len(world.scripted_agents)}",
+            collide=False,
+            render_action=True,
+            action_script=BoidPolicy(self,
+                                     self.obstacle_detection_range,
+                                     self.perception_range,
+                                     self.separation_distance,
+                                     self.smoothing).run,
+            max_speed=.20,
+            shape=Sphere(radius=self.agent_radius),
+            # sensors=[Lidar(world,
+            #                max_range=self.obstacle_detection_range * 1.2,
+            #                entity_filter=lambda e: e.name.startswith("obstacle"),
+            #                render_color=Color.RED, n_rays=12)],
+        )
+        world.add_agent(agent)
+        agent.state.pos = pos if pos is not None else torch.zeros(world.batch_dim, world.dim_p, device=world.device)
 
     def toggle_behavior(self, behavior):
         if behavior == "cohesion":
@@ -302,7 +327,9 @@ class BoidPolicy:
         Lb = self.perception_range * 1.4
         maxspeed = agent.max_speed * 1.5
 
-        for obstacle in [obstacle for obstacle in world.landmarks if obstacle.name.startswith("obstacle")]:
+        obstacles = self.scenario.obstacles
+
+        for obstacle in obstacles:
             dx = obstacle.state.pos - agent.state.pos
             dy = agent.state.vel
             rb = torch.linalg.norm(dy)
